@@ -1,0 +1,15 @@
+# Core
+Django==5.0.1
+django-ninja==1.0.1
+django-ninja-jwt==1.0.0
+
+# Database
+psycopg2-binary==2.9.9
+
+# Development
+pytest==7.4.4
+pytest-django==4.7.0
+factory-boy==3.3.0
+
+# Utils
+python-dotenv==1.0.0
