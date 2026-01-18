@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Создание рабочей директории
 WORKDIR /app
 
 # Копирование зависимостей
@@ -18,11 +19,14 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY . .
 
 # Создание пользователя для безопасности
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p /app/logs /app/media /app/staticfiles && \
+    chown -R appuser:appuser /app
+
 USER appuser
 
-# Создание директорий для логов и медиа
-RUN mkdir -p logs media staticfiles
+# Создание директории для логов
+RUN mkdir -p logs
 
 EXPOSE 8000
 
