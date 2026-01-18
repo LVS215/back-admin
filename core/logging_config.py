@@ -89,4 +89,54 @@ def setup_logging():
             },
         },
         'root': {
-           
+            'handlers': ['console'],
+            'level': 'WARNING',
+        },
+    }
+    
+    logging.config.dictConfig(LOGGING_CONFIG)
+    return logging.getLogger(__name__)
+
+class AuditLogger:
+    """Логирование аудита для CRUD операций"""
+    
+    @staticmethod
+    def log_auth_event(username: str, action: str, ip: str = None, status: str = "success"):
+        """Логирование событий аутентификации"""
+        logger = logging.getLogger('security')
+        message = f"Auth {action}: user={username}, status={status}"
+        if ip:
+            message += f", ip={ip}"
+        
+        if status == "success":
+            logger.info(message)
+        else:
+            logger.warning(message)
+    
+    @staticmethod
+    def log_crud_event(user: str, model: str, action: str, object_id: int, details: str = ""):
+        """Логирование CRUD операций"""
+        logger = logging.getLogger('audit')
+        log_data = {
+            'timestamp': timezone.now().isoformat(),
+            'user': user,
+            'model': model,
+            'action': action,
+            'object_id': object_id,
+            'details': details,
+            'level': 'INFO',
+        }
+        logger.info(f"CRUD Event: {log_data}")
+    
+    @staticmethod
+    def log_error(module: str, error: str, user: str = None):
+        """Логирование ошибок"""
+        logger = logging.getLogger('audit')
+        log_data = {
+            'timestamp': timezone.now().isoformat(),
+            'module': module,
+            'error': error,
+            'user': user,
+            'level': 'ERROR',
+        }
+        logger.error(f"Error: {log_data}")
