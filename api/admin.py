@@ -1,73 +1,49 @@
+"""
+Настройка админ-панели Django
+Требование: Управление пользователями, статьями, комментариями, категориями
+"""
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
-from core.models import Profile, Category, Post, Comment, AuthToken
+from django.utils.html import format_html
+from django.db.models import Count
+from django.urls import reverse
+from django.utils import timezone
 
-# Расширяем UserAdmin для профиля
-class ProfileInline(admin.StackedInline):
-    model = Profile
+from core.models import (
+    UserProfile, 
+    Category, 
+    Post, 
+    Comment, 
+    AuthToken
+)
+
+# Inline для профиля пользователя
+class UserProfileInline(admin.StackedInline):
+    model = UserProfile
     can_delete = False
     verbose_name_plural = 'Profile'
+    fields = ['bio', 'avatar', 'website']
+    readonly_fields = ['avatar_preview']
+    
+    def avatar_preview(self, obj):
+        if obj.avatar:
+            return format_html(
+                '<img src="{}" width="50" height="50" style="border-radius: 50%;" />',
+                obj.avatar.url
+            )
+        return "-"
+    avatar_preview.short_description = 'Avatar Preview'
 
+# Кастомный UserAdmin
 class UserAdmin(BaseUserAdmin):
-    inlines = (ProfileInline,)
-    list_display = ('username', 'email', 'date_joined', 'is_staff')
-    search_fields = ('username', 'email')
-
-# Перерегистрируем User
-admin.site.unregister(User)
-admin.site.register(User, UserAdmin)
-
-# Категории
-@admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'slug', 'created_at')
-    search_fields = ('name',)
-    prepopulated_fields = {'slug': ('name',)}
-
-# Статьи
-@admin.register(Post)
-class PostAdmin(admin.ModelAdmin):
-    list_display = ('title', 'author', 'category', 'status', 'published_at', 'view_count')
-    list_filter = ('status', 'category', 'created_at')
-    search_fields = ('title', 'content')
-    prepopulated_fields = {'slug': ('title',)}
-    raw_id_fields = ('author',)
-    date_hierarchy = 'published_at'
+    list_display = ('username', 'email', 'date_joined', 'is_staff', 'is_active', 'post_count', 'comment_count')
+    list_filter = ('is_staff', 'is_superuser', 'is_active', 'date_joined')
+    search_fields = ('username', 'email', 'first_name', 'last_name')
+    ordering = ('-date_joined',)
+    inlines = (UserProfileInline,)
     
     fieldsets = (
-        (None, {
-            'fields': ('title', 'slug', 'content', 'excerpt', 'author', 'category')
-        }),
-        ('Status', {
-            'fields': ('status', 'published_at')
-        }),
-        ('Statistics', {
-            'fields': ('view_count', 'likes'),
-            'classes': ('collapse',)
-        }),
-    )
-
-# Комментарии
-@admin.register(Comment)
-class CommentAdmin(admin.ModelAdmin):
-    list_display = ('author', 'post', 'content_preview', 'is_approved', 'created_at')
-    list_filter = ('is_approved', 'created_at')
-    search_fields = ('content', 'author__username')
-    raw_id_fields = ('post', 'author', 'parent')
-    
-    def content_preview(self, obj):
-        return obj.content[:50] + '...' if len(obj.content) > 50 else obj.content
-    content_preview.short_description = 'Content'
-
-# Токены
-@admin.register(AuthToken)
-class AuthTokenAdmin(admin.ModelAdmin):
-    list_display = ('user', 'token_preview', 'created_at', 'last_used', 'expires_at', 'is_active')
-    list_filter = ('is_active', 'created_at')
-    search_fields = ('user__username',)
-    readonly_fields = ('token_hash',)
-    
-    def token_preview(self, obj):
-        return f"{obj.token[:20]}..." if obj.token else "No token"
-    token_preview.short_description = 'Token'
+        (None, {'fields': ('username', 'password')}),
+        ('Personal Info', {'fields': ('first_name', 'last_name', 'email')}),
+       
