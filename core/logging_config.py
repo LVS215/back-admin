@@ -1,26 +1,58 @@
-import structlog
 import logging
-from django.utils.timezone import now
-
-def get_logger(name: str) -> structlog.stdlib.BoundLogger:
-    return structlog.get_logger(name)
+import logging.config
+import os
 
 def setup_logging():
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.StackInfoRenderer(),
-            structlog.dev.set_exc_info,
-            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=False,
-    )
-
-# Инициализация логирования при импорте модуля
-setup_logging()
-logger = get_logger(__name__)
+    logging.config.dictConfig({
+        'version': 1,
+        'disable_existing_loggers': False,
+        'formatters': {
+            'verbose': {
+                'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+                'style': '{',
+            },
+            'simple': {
+                'format': '{levelname} {message}',
+                'style': '{',
+            },
+        },
+        'handlers': {
+            'console': {
+                'level': 'INFO',
+                'class': 'logging.StreamHandler',
+                'formatter': 'simple'
+            },
+            'file': {
+                'level': 'ERROR',
+                'class': 'logging.handlers.RotatingFileHandler',
+                'filename': os.path.join('logs', 'error.log'),
+                'maxBytes': 10485760,  # 10MB
+                'backupCount': 5,
+                'formatter': 'verbose',
+            },
+            'security_file': {
+                'level': 'WARNING',
+                'class': 'logging.handlers.RotatingFileHandler',
+                'filename': os.path.join('logs', 'security.log'),
+                'maxBytes': 10485760,
+                'backupCount': 5,
+                'formatter': 'verbose',
+            },
+        },
+        'loggers': {
+            'django.security': {
+                'handlers': ['security_file'],
+                'level': 'WARNING',
+                'propagate': False,
+            },
+            'core': {
+                'handlers': ['console', 'file'],
+                'level': 'INFO',
+                'propagate': False,
+            },
+        },
+        'root': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+        },
+    })
