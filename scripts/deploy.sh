@@ -1,291 +1,74 @@
 #!/bin/bash
 
-# Скрипт развертывания на продакшн сервер
-
-set -e  # Выход при ошибке
-
-# Цвета для вывода
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Функция для логирования
+# Logging function
 log() {
-    echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
 }
 
 error() {
-    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
+    echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1${NC}"
 }
 
-warn() {
-    echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
+warning() {
+    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $1${NC}"
 }
 
-# Проверка переменных окружения
-check_env() {
-    log "Проверка переменных окружения..."
-    
-    required_vars=(
-        "SECRET_KEY"
-        "DB_NAME"
-        "DB_USER"
-        "DB_PASSWORD"
-        "DB_HOST"
-        "DB_PORT"
-        "REDIS_URL"
-        "ALLOWED_HOSTS"
-        "DEBUG"
-    )
-    
-    for var in "${required_vars[@]}"; do
-        if [ -z "${!var}" ]; then
-            error "Переменная окружения $var не установлена"
-            exit 1
-        fi
-    done
-    
-    if [ "$DEBUG" = "True" ]; then
-        warn "DEBUG установлен в True. Убедитесь, что это продакшн сервер!"
-    fi
-    
-    log "Переменные окружения проверены"
-}
-
-# Проверка зависимостей
-check_dependencies() {
-    log "Проверка зависимостей..."
-    
-    # Проверка Docker
-    if ! command -v docker &> /dev/null; then
-        error "Docker не установлен"
-        exit 1
-    fi
-    
-    # Проверка Docker Compose
-    if ! command -v docker-compose &> /dev/null; then
-        error "Docker Compose не установлен"
-        exit 1
-    fi
-    
-    # Проверка доступности портов
-    ports=(80 443 5432 6379)
-    for port in "${ports[@]}"; do
-        if netstat -tuln | grep ":$port " > /dev/null; then
-            warn "Порт $port уже занят"
-        fi
-    done
-    
-    log "Зависимости проверены"
-}
-
-# Создание директорий
-create_directories() {
-    log "Создание необходимых директорий..."
-    
-    directories=(
-        "logs"
-        "logs/nginx"
-        "static"
-        "media"
-        "backups"
-        "ssl"
-    )
-    
-    for dir in "${directories[@]}"; do
-        if [ ! -d "$dir" ]; then
-            mkdir -p "$dir"
-            log "Создана директория: $dir"
-        fi
-    done
-    
-    # Установка прав
-    chmod -R 755 logs
-    chmod -R 755 static
-    chmod -R 755 media
-    
-    log "Директории созданы"
-}
-
-# Настройка Nginx
-setup_nginx() {
-    log "Настройка Nginx..."
-    
-    if [ ! -f "nginx/nginx.conf" ]; then
-        error "Файл nginx/nginx.conf не найден"
-        exit 1
-    fi
-    
-    # Создание SSL сертификатов (если нужно)
-    if [ ! -f "ssl/certificate.crt" ] || [ ! -f "ssl/private.key" ]; then
-        warn "SSL сертификаты не найдены. Используется self-signed сертификат для тестирования"
-        
-        mkdir -p ssl
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout ssl/private.key \
-            -out ssl/certificate.crt \
-            -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
-    fi
-    
-    log "Nginx настроен"
-}
-
-# Сборка и запуск контейнеров
-build_and_start() {
-    log "Сборка Docker образов..."
-    docker-compose build
-    
-    log "Запуск контейнеров..."
-    docker-compose up -d
-    
-    log "Ожидание запуска сервисов..."
-    sleep 10
-    
-    # Проверка состояния контейнеров
-    log "Проверка состояния контейнеров..."
-    docker-compose ps
-    
-    # Проверка логов
-    log "Проверка логов..."
-    docker-compose logs --tail=10
-}
-
-# Выполнение миграций
-run_migrations() {
-    log "Выполнение миграций базы данных..."
-    
-    max_retries=10
-    retry_count=0
-    
-    while [ $retry_count -lt $max_retries ]; do
-        if docker-compose exec -T web python manage.py migrate --noinput; then
-            log "Миграции выполнены успешно"
-            return 0
-        fi
-        
-        retry_count=$((retry_count + 1))
-        warn "Попытка $retry_count/$max_retries не удалась. Повтор через 5 секунд..."
-        sleep 5
-    done
-    
-    error "Не удалось выполнить миграции после $max_retries попыток"
+# Load environment
+ENV_FILE=".env.production"
+if [ -f "$ENV_FILE" ]; then
+    log "Loading environment from $ENV_FILE"
+    export $(cat $ENV_FILE | grep -v '^#' | xargs)
+else
+    error "$ENV_FILE not found"
     exit 1
-}
+fi
 
-# Сборка статических файлов
-collect_static() {
-    log "Сборка статических файлов..."
-    docker-compose exec -T web python manage.py collectstatic --noinput
-    log "Статические файлы собраны"
-}
+# Backup database before deployment
+log "Creating database backup..."
+./scripts/backup_db.sh
 
-# Создание суперпользователя
-create_superuser() {
-    log "Создание суперпользователя..."
-    
-    if [ -n "$SUPERUSER_USERNAME" ] && [ -n "$SUPERUSER_EMAIL" ] && [ -n "$SUPERUSER_PASSWORD" ]; then
-        log "Создание суперпользователя с предоставленными учетными данными"
-        
-        cat << EOF | docker-compose exec -T web python manage.py shell
-from django.contrib.auth import get_user_model
-User = get_user_model()
+# Stop existing containers
+log "Stopping existing containers..."
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml down
 
-if not User.objects.filter(username='$SUPERUSER_USERNAME').exists():
-    User.objects.create_superuser(
-        username='$SUPERUSER_USERNAME',
-        email='$SUPERUSER_EMAIL',
-        password='$SUPERUSER_PASSWORD'
-    )
-    print('Суперпользователь создан')
-else:
-    print('Суперпользователь уже существует')
-EOF
-    else
-        warn "Учетные данные суперпользователя не указаны. Создание пропущено."
-        warn "Чтобы создать суперпользователя, установите переменные:"
-        warn "SUPERUSER_USERNAME, SUPERUSER_EMAIL, SUPERUSER_PASSWORD"
-    fi
-}
+# Pull latest changes
+log "Pulling latest changes..."
+git pull origin main
 
-# Загрузка начальных данных
-load_fixtures() {
-    log "Загрузка начальных данных..."
-    
-    fixtures=(
-        "categories.json"
-        "tags.json"
-        "users.json"
-    )
-    
-    for fixture in "${fixtures[@]}"; do
-        if [ -f "fixtures/$fixture" ]; then
-            log "Загрузка фикстуры: $fixture"
-            docker-compose exec -T web python manage.py loaddata "fixtures/$fixture"
-        else
-            warn "Фикстура $fixture не найдена"
-        fi
-    done
-}
+# Build and start containers
+log "Building and starting containers..."
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
-# Настройка кэша
-setup_cache() {
-    log "Настройка кэша..."
-    docker-compose exec -T web python manage.py clear_cache
-    log "Кэш очищен"
-}
+# Run migrations
+log "Running database migrations..."
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml exec web python manage.py migrate
 
-# Проверка здоровья приложения
-health_check() {
-    log "Проверка здоровья приложения..."
-    
-    max_retries=10
-    retry_count=0
-    
-    while [ $retry_count -lt $max_retries ]; do
-        if curl -f http://localhost:8000/api/health/ > /dev/null 2>&1; then
-            log "Приложение работает корректно"
-            return 0
-        fi
-        
-        retry_count=$((retry_count + 1))
-        warn "Попытка $retry_count/$max_retries не удалась. Повтор через 5 секунд..."
-        sleep 5
-    done
-    
-    error "Приложение не прошло проверку здоровья после $max_retries попыток"
-    docker-compose logs web
+# Collect static files
+log "Collecting static files..."
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml exec web python manage.py collectstatic --noinput
+
+# Clear cache
+log "Clearing cache..."
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml exec web python manage.py clear_cache
+
+# Restart services
+log "Restarting services..."
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml restart
+
+# Health check
+log "Performing health check..."
+sleep 10
+if curl -s -o /dev/null -w "%{http_code}" https://$ALLOWED_HOSTS/api/health/ | grep -q "200"; then
+    log "Deployment successful!"
+else
+    error "Health check failed"
     exit 1
-}
+fi
 
-# Основная функция
-main() {
-    log "Начало развертывания Blog API..."
-    
-    # Смена директории на корень проекта
-    cd "$(dirname "$0")/.."
-    
-    # Выполнение шагов развертывания
-    check_env
-    check_dependencies
-    create_directories
-    setup_nginx
-    build_and_start
-    run_migrations
-    collect_static
-    create_superuser
-    load_fixtures
-    setup_cache
-    health_check
-    
-    log "Развертывание успешно завершено!"
-    log "Приложение доступно по адресу: http://localhost"
-    log "API документация: http://localhost/api/docs"
-    log "Админ-панель: http://localhost/admin"
-    log ""
-    log "Для просмотра логов выполните: docker-compose logs -f"
-    log "Для остановки приложения: docker-compose down"
-}
-
-# Запуск основной функции
-main "$@"
+log "Deployment completed successfully"
