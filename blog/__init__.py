@@ -1,10 +1,3 @@
-# blog/__init__.py
-"""
-Основное приложение Django для блога
-"""
+from .celery import app as celery_app
 
-default_app_config = 'blog.apps.BlogConfig'
-
-__version__ = '1.0.0'
-__author__ = 'Your Name'
-__email__ = 'your.email@example.com'
+__all__ = ('celery_app',)
