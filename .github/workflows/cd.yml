@@ -1,0 +1,82 @@
+name: Production Deployment
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Login to DockerHub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ secrets.DOCKERHUB_USERNAME }}/blog-api:latest
+          ${{ secrets.DOCKERHUB_USERNAME }}/blog-api:${{ github.ref_name }}
+    
+    - name: Deploy to production server
+      env:
+        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      run: |
+        echo "$DEPLOY_KEY" > deploy_key
+        chmod 600 deploy_key
+        
+        cat > deploy.sh << 'EOF'
+        #!/bin/bash
+        cd /var/www/blog
+        
+        # Update docker-compose.yml with new image
+        sed -i "s|image: .*/blog-api:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/blog-api:${{ github.ref_name }}|" docker-compose.yml
+        
+        # Pull and restart containers
+        docker-compose pull
+        docker-compose down
+        docker-compose up -d
+        
+        # Run migrations
+        docker-compose exec -T web python manage.py migrate
+        
+        # Collect static files
+        docker-compose exec -T web python manage.py collectstatic --noinput
+        
+        # Clear cache
+        docker-compose exec -T web python manage.py clear_cache
+        
+        # Restart Nginx
+        sudo systemctl restart nginx
+        
+        echo "Deployment completed successfully!"
+        EOF
+        
+        chmod +x deploy.sh
+        scp -o StrictHostKeyChecking=no -i deploy_key deploy.sh $DEPLOY_USER@$DEPLOY_HOST:/tmp/deploy.sh
+        ssh -o StrictHostKeyChecking=no -i deploy_key $DEPLOY_USER@$DEPLOY_HOST "bash /tmp/deploy.sh"
+    
+    - name: Send deployment notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: 'Deployment of ${{ github.repository }} ${{ github.ref_name }} completed!'
+        author_name: 'GitHub Actions'
+        fields: repo,message,commit,author,action,eventName,ref,workflow,job,took
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      if: always()
