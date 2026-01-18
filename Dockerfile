@@ -1,75 +1,40 @@
-# Используем официальный Python образ
-FROM python:3.10-slim-bullseye
+FROM python:3.11-slim as builder
 
-# Устанавливаем переменные окружения
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONFAULTHANDLER=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# Создаем пользователя для безопасности
-RUN groupadd -r django && \
-    useradd -r -g django django
-
-# Устанавливаем системные зависимости
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Для psycopg2
-    gcc \
-    libpq-dev \
-    # Для Pillow (обработка изображений)
-    libjpeg-dev \
-    libpng-dev \
-    libtiff-dev \
-    libwebp-dev \
-    # Для других зависимостей
-    curl \
-    wget \
-    gettext \
-    # Для мониторинга
-    procps \
-    # Утилиты для разработки
-    nano \
-    htop \
-    && rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем зависимости
-COPY requirements.txt .
+# Установка зависимостей для сборки
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Python зависимости
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+COPY requirements-prod.txt .
+RUN pip install --upgrade pip && pip install --user -r requirements-prod.txt
 
-# Копируем проект
+# Финальный образ
+FROM python:3.11-slim
+
+# Установка runtime зависимостей
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Копирование Python пакетов
+COPY --from=builder /root/.local /root/.local
+ENV PATH=/root/.local/bin:$PATH
+
+# Копирование приложения
 COPY . .
 
-# Создаем необходимые директории
-RUN mkdir -p static media logs && \
-    chown -R django:django /app && \
-    chmod -R 755 /app
+# Создание пользователя
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p /app/staticfiles /app/media && \
+    chown -R appuser:appuser /app
 
-# Меняем владельца файлов
-RUN chown -R django:django /app
+USER appuser
 
-# Переключаемся на непривилегированного пользователя
-USER django
-
-# Собираем статические файлы
-RUN python manage.py collectstatic --noinput
-
-# Открываем порт
 EXPOSE 8000
-
-# Запускаем приложение через Gunicorn
-CMD ["gunicorn", "blog.wsgi:application", \
-     "--bind", "0.0.0.0:8000", \
-     "--workers", "3", \
-     "--threads", "2", \
-     "--worker-class", "gthread", \
-     "--timeout", "120", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-", \
-     "--log-level", "info"]
