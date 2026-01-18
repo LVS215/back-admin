@@ -1,0 +1,183 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  POSTGRES_DB: blog_test_db
+  POSTGRES_USER: blog_test_user
+  POSTGRES_PASSWORD: blog_test_password
+  REDIS_URL: redis://localhost:6379/0
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-django pytest-cov flake8 black isort mypy
+    
+    - name: Check code formatting with black
+      run: |
+        black --check --diff .
+    
+    - name: Check imports with isort
+      run: |
+        isort --check-only --diff .
+    
+    - name: Lint with flake8
+      run: |
+        flake8 .
+    
+    - name: Type check with mypy
+      run: |
+        mypy .
+    
+    - name: Run migrations
+      env:
+        SECRET_KEY: test-secret-key
+        DEBUG: 'True'
+        DATABASE_URL: postgres://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }}
+      run: |
+        python manage.py migrate
+    
+    - name: Run tests with pytest
+      env:
+        SECRET_KEY: test-secret-key
+        DEBUG: 'True'
+        DATABASE_URL: postgres://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }}
+        REDIS_URL: ${{ env.REDIS_URL }}
+      run: |
+        pytest --cov=core --cov-report=xml --cov-report=html
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+    
+    - name: Upload test artifacts
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-reports
+        path: |
+          htmlcov/
+          coverage.xml
+  
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Run Bandit security check
+      uses: shundor/python-bandit-action@v1.0.1
+      with:
+        report_format: 'json'
+        output_file: 'bandit-report.json'
+    
+    - name: Run Safety check
+      run: |
+        pip install safety
+        safety check --full-report
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+  
+  docker:
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Build Docker image
+      run: |
+        docker build -t blog-api:latest .
+    
+    - name: Test Docker image
+      run: |
+        docker run --rm blog-api:latest python -c "import django; print(django.get_version())"
+    
+    - name: Save Docker image
+      run: |
+        docker save blog-api:latest -o blog-api.tar
+  
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [docker]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to production
+      env:
+        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      run: |
+        echo "$DEPLOY_KEY" > deploy_key
+        chmod 600 deploy_key
+        ssh -o StrictHostKeyChecking=no -i deploy_key $DEPLOY_USER@$DEPLOY_HOST '
+          cd /var/www/blog &&
+          git pull origin main &&
+          docker-compose down &&
+          docker-compose pull &&
+          docker-compose up -d --build &&
+          docker-compose exec web python manage.py migrate &&
+          docker-compose exec web python manage.py collectstatic --noinput
+        '
