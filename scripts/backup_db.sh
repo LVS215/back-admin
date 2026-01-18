@@ -1,59 +1,30 @@
 #!/bin/bash
+#!/bin/bash
 
-# Скрипт резервного копирования базы данных
+# Load environment
+source .env.production
 
-set -e
+# Create backup directory
+BACKUP_DIR="backups/$(date +%Y-%m-%d_%H-%M-%S)"
+mkdir -p $BACKUP_DIR
 
-# Настройки
-BACKUP_DIR="backups"
-DATE=$(date '+%Y-%m-%d_%H-%M-%S')
-BACKUP_FILE="$BACKUP_DIR/backup_$DATE.sql.gz"
-RETENTION_DAYS=7
+# Backup PostgreSQL database
+log "Backing up PostgreSQL database..."
+docker-compose exec db pg_dump -U $DB_USER $DB_NAME > $BACKUP_DIR/db_backup.sql
 
-# Цвета для вывода
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m'
+# Backup media files
+log "Backing up media files..."
+tar -czf $BACKUP_DIR/media.tar.gz media/
 
-log() {
-    echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
-}
+# Backup logs
+log "Backing up logs..."
+tar -czf $BACKUP_DIR/logs.tar.gz logs/
 
-error() {
-    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
-}
+# Create backup info file
+cat > $BACKUP_DIR/backup_info.txt << EOF
+Backup created: $(date)
+Database: $DB_NAME
+Backup size: $(du -sh $BACKUP_DIR | cut -f1)
+EOF
 
-# Проверка переменных окружения
-if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_HOST" ]; then
-    error "Переменные окружения базы данных не установлены"
-    exit 1
-fi
-
-# Создание директории для бэкапов
-mkdir -p "$BACKUP_DIR"
-
-# Резервное копирование
-log "Начало резервного копирования базы данных $DB_NAME..."
-
-if pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" | gzip > "$BACKUP_FILE"; then
-    log "Резервное копирование успешно завершено: $BACKUP_FILE"
-    
-    # Проверка размера файла
-    FILE_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
-    log "Размер файла бэкапа: $FILE_SIZE"
-else
-    error "Ошибка при резервном копировании"
-    exit 1
-fi
-
-# Очистка старых бэкапов
-log "Очистка бэкапов старше $RETENTION_DAYS дней..."
-find "$BACKUP_DIR" -name "backup_*.sql.gz" -mtime +$RETENTION_DAYS -delete
-
-# Вывод информации о оставшихся бэкапах
-BACKUP_COUNT=$(find "$BACKUP_DIR" -name "backup_*.sql.gz" | wc -l)
-log "Всего бэкапов в директории: $BACKUP_COUNT"
-
-# Восстановление из бэкапа (опционально, закомментировано)
-# log "Для восстановления из бэкапа выполните:"
-# echo "gunzip -c $BACKUP_FILE | psql -h $DB_HOST -U $DB_USER -d $DB_NAME"
+log "Backup completed: $BACKUP_DIR"
